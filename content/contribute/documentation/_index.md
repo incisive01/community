@@ -1,71 +1,210 @@
 ---
-title: "Percona Product Documentation"
-description: "How to contribute to the Percona Product Documentation"
+title: "Migration Azure PostgreSQL from single to FLEX"
+description: "Process of migration Azure POstgreSQL from Single to FLEX"
 ---
+  IT has 3 phases
 
-{{% hero-gradient class="aqua" %}}
+   Pre-migration 
+    pre_migration.sh 
+    
+     Get Azure POstgreSQL single server 
+       It will get  security DDL using pg_dumpall
+       DB create scripts based on single server DB owner
+       recordc , indexes , constraints count
 
-# Contributing to Percona Product Documentation
+       source ~/.bashrc
+SCRIPTS=/u08/migration
+strttm=$(psql -h $src_host -U $src_usr -d postgres -t -A -c " select cast(now() as timestamp ) ")
+# get Roles and priviliges
+pg_dumpall  -h $src_host -U $src_usr  --roles-only -f $SCRIPTS/${src_host}_privs.ddl
 
-Our product documentation is constantly evolving and improving. Did you spot
-some outdated information, or a typo? Is the documentation incomplete or confusing?
+# generate create database scripts at target
+psql -h $src_host -U $src_usr -d postgres -t -A -c " select ' create database '||rtrim(datname)||' with owner '||rtrim(pg_catalog.pg_get_userbyid(datdba))||';' from pg_database where datname not in ('template1','template0','azure_maintenance','azure_sys') "  -o $SCRIPTS/crt_db_at_target.sql
 
-Help us making it better!
+# get DB size at source
 
-If you would like to leave feedback or make a suggestion about enhancing our
-product documentation, you have multiple options of doing so.
+psql -h $src_host -U $src_usr -d postgres -c "\l+" > $SCRIPTS/${src_host}_dbsz.lst
 
-{{% /hero-gradient %}}
+for db in $(psql -h $src_host -U $src_usr  -t -A -c " select datname from pg_database  where datname not in ('template1','template0','azure_maintenance','azure_sys') " )
+do
 
-{{% hero %}}
-{{% typography %}}
-## Submitting Actual Changes to the Documentation
+echo " database backup for database $db "
 
-As we say in the open source world, "patches are always welcome!" - So instead of
-submitting a request to get the documentation changed, how about submitting the
-concrete changes yourself? It's really easy but can be intimidating the first
-time. This guide should take the edge off and you'll see your changes live in a
-matter of hours!
+pg_dump -Fc -h $src_host  -U $src_usr  -d  $db  -f $SCRIPTS/pg_dump_${db}.dmp
 
-* Similar to our software, our documentation is open source and is managed using
-  the same tools that we use to manage changes to our code base.
-* All of our manuals provide an "Edit this page" option that you can
-  use to perform the actual documentation changes that you would like to see in
-  your web browser. Note that this process requires having an account on GitHub
-  and some basic understanding of the [code submission and review
-  process](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests)
-  on this platform.
-* The documentation for each product is maintained in dedicated git repositories
-  per product. See [Location of Documentation and Sources](./locations) for
-  details about the location of the documentation for each product.
-* Most of these locations contain a file called `CONTRIBUTING.md` that outlines
-  the steps required to submit a change for the documentation.
-* We try to maintain a consistent style across our documentation. If you're
-  making changes to the documentation, please follow the guidelines outlined in
-  the [Percona Documentation Style Guide](https://docs.percona.com/style-guide/).
+echo " get roles and priviliges in all schemas in the database $db "
 
-<iframe width="560" height="315" src="https://www.youtube.com/embed/3bNBzgd1qxI" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
+psql -h $src_host -U $src_usr -d  $db -t -A -c " select ' insert into src_roles_n_privs  values  ('||chr(39)||rtrim(pgr.rolname)||chr(39)||chr(44)||chr(39)||rtrim(pgc.relname)||chr(39)||chr(44)||chr(39)||rtrim(nsp.nspname)||chr(39)||chr(44)||chr(39)||rtrim(has_table_privilege(pgr.rolname, pgc.oid, 'SELECT')::text)||chr(39)||chr(44)||chr(39)||rtrim(has_table_privilege(pgr.rolname, pgc.oid, 'INSERT')::text)||chr(39)||chr(44)||chr(39)||rtrim(has_table_privilege(pgr.rolname, pgc.oid, 'UPDATE')::text)||chr(39)||chr(44)||chr(39)||rtrim(has_table_privilege(pgr.rolname, pgc.oid, 'DELETE')::text)||chr(39)||' );'  FROM pg_roles pgr CROSS JOIN pg_class pgc JOIN pg_namespace nsp ON pgc.relnamespace = nsp.oid WHERE  nsp.nspname NOT IN ('pg_catalog', 'information_schema')     AND pgc.relkind = 'r' " -o $SCRIPTS/get_src_${db}_rolesNprivs.sql
 
-## Submitting a Jira ticket
+echo " get record count  all schemas in the database $db "
 
-If your suggestion is bigger than what you can personally handle or you would
-like to solicit some feedback on your proposal before submitting it, no problem!
-Similar to the software engineers working on our various products, we use our
-[public instance of Atlassian Jira](https://perconadev.atlassian.net/) for tracking our
-Documentation work as well.
+psql -h $src_host -U $src_usr  -d $db   -t -A -c " select  ' select  '||chr(39)||'  insert into tbl_rec_src values ('||chr(39)||'||chr(39)||'||chr(39)||rtrim(schemaname)||chr(39)||'||chr(39)||chr(44)||chr(39)||'||chr(39)||ltrim(tablename)||chr(39)||'||chr(39)||chr(44)||rtrim(count(*)::text)||chr(41)||chr(59) from '||rtrim(schemaname)||'.'||ltrim(tablename)||'  ;' from pg_tables where schemaname not in ('pg_catalog','information_schema') "  -o  $SCRIPTS/mk_get_src_${db}_tbl_rc_cnt.sql
+psql -h $src_host -U $src_usr -d $db   -t -A  -f   $SCRIPTS/mk_get_src_${db}_tbl_rc_cnt.sql  -o $SCRIPTS/get_src_${db}_tbl_rc_cnt.sql
 
-* If you have a **product-specific** suggestion, please submit your request in
-  the corresponding product's Jira project (e.g.
-  [PS](https://perconadev.atlassian.net/projects/PS/) for Percona Server for MySQL,
-  [PMM](https://perconadev.atlassian.net/projects/PMM/) for PMM,
-  [PSMDB](https://perconadev.atlassian.net/projects/PSMDB/) for Percona Server for
-  MongoDB).
-* Make sure to **select "Documentation" as the Component** when submitting your
-  request and please **include a link to the public location** of the
-  documentation page that you would like to get changed.
-* If you would like to suggest an improvement or change that affects all of
-  Percona's documentation (e.g. a structural or stylistic change), there's a
-  [dedicated DOCS Jira project](https://perconadev.atlassian.net/projects/DOCS/) that
-  tracks overarching documentation issues.
-{{% /typography %}}
-{{% /hero %}}
+echo " get  indexes detail  for all schemas in the database $db "
+
+psql -h $src_host -U $src_usr  -d $db   -t -A -c "select ' insert into get_src_idx_dtl values ('||chr(39)||rtrim(schemaname)||chr(39)||chr(44)||chr(39)||rtrim(tablename)||chr(39)||chr(44)||rtrim(count(indexname)::text)||');' from pg_indexes  group by schemaname,tablename ;"  -o $SCRIPTS/get_src_${db}_idx_dtl.sql
+
+echo " get constraints details for all schemas in the database $db "
+
+psql -h $src_host -U $src_usr  -d $db  -t -A -c "select ' insert into get_src_const_dtl values ('||chr(39)||rtrim( connamespace::regnamespace::text)||chr(39)||chr(44)||chr(39)||rtrim(conrelid::regclass::text)||chr(39)||chr(44)||rtrim(count(conname)::text)||');' from  pg_constraint  where connamespace::regnamespace::text  not in ('pg_catalog','information_schema') group by connamespace::regnamespace::text,conrelid::regclass::text ;" -o $SCRIPTS/get_src_${db}_const_dtl.sql
+
+echo "             "
+echo " ****************  end of pre migration activity for database $db  *************************** "
+done
+
+endtm=$(psql -h $src_host -U $src_usr -d postgres -t -A -c " select cast(now() as timestamp )")
+
+jbtm=$(psql -h $src_host -U $src_usr -d postgres -t -A -c " select cast('$endtm' as timestamp ) - cast('$strttm' as timestamp )")
+echo "***************************************************************************************"
+echo " Pre Migration activity started  at                 : $strttm "
+echo " Pre Migration activity ended    at                 : $endtm  "
+echo "---------------------------------------------------------------------------------------"
+echo " Duration of Pre Migration Activity is              : $jbtm "
+echo "****************************************************************************************"
+
+
+
+ migration.sh
+  will create  run create user and roles 
+  create DB
+  restore database from single server pg_dump
+
+  source ~/.bashrc
+SCRIPTS=$(pwd)
+strttm=$(psql -h $trg_host -U $trg_usr -d postgres -t -A -c " select cast(now() as timestamp ) ")
+
+echo "  Create Roles and grant  priviliges at $trg_host  cluster "
+
+psql -h $trg_host -U $trg_usr  -d postgres -f $SCRIPTS/${src_host}_privs.ddl -o $SCRIPTS/${src_host}_privs.log
+
+echo " Drop database , if created "
+psql -h $trg_host -U $trg_usr -d postgres -t -A -c " select ' drop database '||rtrim(datname)||';' from pg_database where datname not in ('template1','template0','azure_maintenance','azure_sys','postgres') "   -o $SCRIPTS/drp_db.sql
+
+psql -h $trg_host -U $trg_usr -d postgres -f $SCRIPTS/drp_db.sql  -o $SCRIPTS/drp_db.log
+
+echo " Re-created database  using scripts extracted in pre migration activity "
+
+psql -h $trg_host -U $trg_usr -d postgres -f $SCRIPTS/crt_db_at_target.sql -o $SCRIPTS/crt_db_at_target.log
+
+
+for db in $(psql -h $trg_host -U $trg_usr  -t -A -c " select datname from pg_database  where datname not in ('template1','template0','azure_maintenance','azure_sys') " )
+do
+
+echo " Restore database $db  from  backup took from source cluster $src_host  "
+
+pg_restore -v -h $trg_host  -U $trg_usr   --no-owner --role=$trg_usr -d  $db  pg_dump_${db}.dmp
+
+echo " create validation tables at target $trg_host "
+psql -h $trg_host -U $trg_usr -d $db -f $SCRIPTS/crt_validate_tbl.ddl -o $SCRIPTS/crt_validate_tbl.log
+
+psql -h $trg_host -U $trg_usr  -d $db -f $SCRIPTS/${src_host}_privs.ddl -o $SCRIPTS/${src_host}_privs.log
+
+echo " load  data from source into target for validation "
+ psql -h $trg_host -U $trg_usr -d $db  -f  $SCRIPTS/get_src_${db}_rolesNprivs.sql -o $SCRIPTS/get_src_${db}_rolesNprivs.log
+ psql -h $trg_host -U $trg_usr -d $db  -f  $SCRIPTS/get_src_${db}_tbl_rc_cnt.sql  -o $SCRIPTS/get_src_${db}_tbl_rc_cnt.log
+ psql -h $trg_host -U $trg_usr -d $db  -f  $SCRIPTS/get_src_${db}_idx_dtl.sql     -o $SCRIPTS/get_src_${db}_idx_dtl.log
+ psql -h $trg_host -U $trg_usr -d $db  -f  $SCRIPTS/get_src_${db}_const_dtl.sql   -o $SCRIPTS/get_src_${db}_const_dtl.log
+ psql -h $trg_host -U $trg_usr -d $db  -f $SCRIPTS/src_${db}_tbl_own.sql          -o $SCRIPTS/src_${db}_tbl_own.log
+
+echo " get roles and priviliges in all schemas in the database $db "
+
+psql -h $trg_host -U $trg_usr -d  $db -t -A -c " select ' insert into trg_roles_n_privs  values  ('||chr(39)||rtrim(pgr.rolname)||chr(39)||chr(44)||chr(39)||rtrim(pgc.relname)||chr(39)||chr(44)||chr(39)||rtrim(nsp.nspname)||chr(39)||chr(44)||chr(39)||rtrim(has_table_privilege(pgr.rolname, pgc.oid, 'SELECT')::text)||chr(39)||chr(44)||chr(39)||rtrim(has_table_privilege(pgr.rolname, pgc.oid, 'INSERT')::text)||chr(39)||chr(44)||chr(39)||rtrim(has_table_privilege(pgr.rolname, pgc.oid, 'UPDATE')::text)||chr(39)||chr(44)||chr(39)||rtrim(has_table_privilege(pgr.rolname, pgc.oid, 'DELETE')::text)||chr(39)||' );'  FROM pg_roles pgr CROSS JOIN pg_class pgc JOIN pg_namespace nsp ON pgc.relnamespace = nsp.oid WHERE  nsp.nspname NOT IN ('pg_catalog', 'information_schema')     AND pgc.relkind = 'r' " -o $SCRIPTS/get_trg_${db}_rolesNprivs.sql
+
+psql -h $trg_host -U $trg_usr -d  $db -f  $SCRIPTS/get_trg_${db}_rolesNprivs.sql -o $SCRIPTS/get_trg_${db}_rolesNprivs.log
+
+echo " get record count  all schemas in the database $db "
+
+psql -h $trg_host -U $trg_usr  -d $db   -t -A -c " select  ' select  '||chr(39)||'  insert into tbl_rec_src values ('||chr(39)||'||chr(39)||'||chr(39)||rtrim(schemaname)||chr(39)||'||chr(39)||chr(44)||chr(39)||'||chr(39)||ltrim(tablename)||chr(39)||'||chr(39)||chr(44)||rtrim(count(*)::text)||chr(41)||chr(59) from '||rtrim(schemaname)||'.'||ltrim(tablename)||'  ;' from pg_tables where schemaname not in ('pg_catalog','information_schema') "  -o  $SCRIPTS/mk_get_trg_${db}_tbl_rc_cnt.sql
+psql -h $trg_host -U $trg_usr -d $db   -t -A  -f   $SCRIPTS/mk_get_trg_${db}_tbl_rc_cnt.sql  -o $SCRIPTS/get_trg_${db}_tbl_rc_cnt.sql
+
+psql -h $trg_host -U $trg_usr  -d $db -f  $SCRIPTS/get_trg_${db}_tbl_rc_cnt.sql -o $SCRIPTS/get_trg_${db}_tbl_rc_cnt.log
+
+echo " get  indexes detail  for all schemas in the database $db "
+
+psql -h $trg_host -U $trg_usr  -d $db   -t -A -c "select ' insert into get_src_idx_dtl values ('||chr(39)||rtrim(schemaname)||chr(39)||chr(44)||chr(39)||rtrim(tablename)||chr(39)||chr(44)||rtrim(count(indexname)::text)||');' from pg_indexes  group by schemaname,tablename ;"  -o $SCRIPTS/get_trg_${db}_idx_dtl.sql
+
+psql -h $trg_host -U $trg_usr  -d $db -f  $SCRIPTS/get_trg_${db}_idx_dtl.sql -o $SCRIPTS/get_trg_${db}_idx_dtl.log
+
+echo " get constraints details for all schemas in the database $db "
+
+psql -h $trg_host -U $trg_usr  -d $db  -t -A -c "select ' insert into get_src_const_dtl values ('||chr(39)||rtrim( connamespace::regnamespace::text)||chr(39)||chr(44)||chr(39)||rtrim(conrelid::regclass::text)||chr(39)||chr(44)||rtrim(count(conname)::text)||');' from  pg_constraint  where connamespace::regnamespace::text  not in ('pg_catalog','information_schema') group by connamespace::regnamespace::text,conrelid::regclass::text ;" -o $SCRIPTS/get_trg_${db}_const_dtl.sql
+
+psql -h $trg_host -U $trg_usr  -d $db  -f $SCRIPTS/get_trg_${db}_const_dtl.sql -o $SCRIPTS/get_trg_${db}_const_dtl.log
+
+echo "                                                                                               "
+echo " ****************  end of migration activity for database $db  *************************** "
+done
+
+echo "                                                                                               "
+echo " After restore database from source backup , get DB size "
+psql -h $trg_host -U $trg_usr -d postgres -c " select datname , pg_size_pretty(pg_database_size(datname)) as db_size from pg_database" -o $SCRIPTS/get_aft_db_sz.lst
+
+endtm=$(psql -h $trg_host -U $trg_usr -d postgres -t -A -c " select cast(now() as timestamp )")
+
+jbtm=$(psql -h $trg_host -U $trg_usr -d postgres -t -A -c " select cast('$endtm' as timestamp ) - cast('$strttm' as timestamp )")
+echo "***************************************************************************************"
+echo " Migration activity started  at                 : $strttm "
+echo " Migration activity ended    at                 : $endtm  "
+echo "---------------------------------------------------------------------------------------"
+echo " Duration of Migration Activity is              : $jbtm "
+echo "****************************************************************************************"
+
+
+Post migration
+re-sert indentity column
+validate objects , records , indexes and constraint , user and roles
+
+
+
+source ~/.bashrc
+SCRIPTS=/u08/migration
+strttm=$(psql -h $trg_host -U $trg_usr -d postgres -t -A -c " select cast(now() as timestamp ) ")
+
+
+
+for db in $(psql -h $trg_host -U $trg_usr  -t -A -c " select datname from pg_database  where datname not in ('template1','template0','azure_maintenance','azure_sys') " )
+do
+
+echo " reset sequences for all schemas in the database $db "
+
+$SCRIPTS/reset_sequence.sh $trg_host $trg_usr $db
+
+
+echo " run analyze  all tables in the database $db "
+   psql -h $trg_host -U $trg_usr  -d $db  -t -A -c " select ' analyze '||rtrim(schemaname)||'.'||ltrim(tablename)||';' from pg_tables where schemaname not in ('pg_catalog','information_schema') " -o  $SCRIPTS/analyze-$db.sql
+   psql -h  $trg_host  -U $trg_usr  -d $db  -f  $SCRIPTS/analyze-$db.sql  -o $SCRIPTS/analyze-$db.log
+
+echo " default priviliges at source $src_host for database $db "
+
+psql -h $src_host -U $scr_usr -d $db -E -c "\dpp"
+
+echo " default priviliges at target $trg_host for database $db "
+
+psql -h $trg_host -U $trg_usr -d $db -E -c "\dpp"
+
+
+echo "                                                                                               "
+echo " ****************  end of pre migration activity for database $db  *************************** "
+done
+
+echo "                                                                                               "
+echo " After restore database from source backup , get DB size "
+psql -h $trg_host -U $trg_usr -d postgres -c " select datname , pg_size_pretty(pg_database_size(datname)) as db_size from pg_database" -o $SCRIPTS/get_aft_db_sz.lst
+
+echo " After migration all Databases sanitory check  details "
+echo "----------------------------------------------------------------------------------------------------"
+psql -h $trg_host -U $trg_usr -d postgres -f $SCRIPTS/get_db_healtch_chk.sql
+echo "*********************** End of the DB sanitory check report ****************************************"
+
+
+endtm=$(psql -h $trg_host -U $trg_usr -d postgres -t -A -c " select cast(now() as timestamp )")
+
+jbtm=$(psql -h $trg_host -U $trg_usr -d postgres -t -A -c " select cast('$endtm' as timestamp ) - cast('$strttm' as timestamp )")
+echo "***************************************************************************************"
+echo " post migration activity   started  at                 : $strttm "
+echo " post migration activity   ended    at                 : $endtm  "
+echo "---------------------------------------------------------------------------------------"
+echo " Duration of post Migration Activity              : $jbtm "
+echo "****************************************************************************************"
+
